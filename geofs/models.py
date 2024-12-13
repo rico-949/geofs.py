@@ -28,7 +28,7 @@ SOFTWARE.
 
 
 from urllib.parse import unquote
-import utils as u
+from . import utils as u
 
 
 
@@ -44,7 +44,7 @@ class Aircraft:
     def __eq__(self, __o: object) -> bool:
         if not isinstance(__o, Aircraft):
             return False
-        return list(self) == list(__o)
+        return self.id == __o.id and self.name == __o.name
 
 
 class Player:
@@ -54,17 +54,27 @@ class Player:
     def __init__(self, _data: dict):
         self._data = _data
         self.acid = self._data["acid"]
-        self.aircraft = u.get_aircraft(self._data["ac"])
+        self.aircraft = Aircraft(u.get_aircraft(self._data["ac"]))
         self.callsign = self._data["cs"]
         self.foo = self.acid is None
         self.airspeed = self._data["st"]["as"]
-        self.lat = self._data["co"][0]
-        self.long = self._data["co"][1]
-        self.altitude = round(self._data["co"][2]*3.28084, 3)
-        if self._data["co"][3] < 0:
-            self.hdg = round(self._data["co"][3] + 360, 2)
+        if self._data["co"]:
+            self.lat = self._data["co"][0]
+            self.long = self._data["co"][1]
+            self.alt = round(self._data["co"][2]*3.28084, 3) #Meter to feet conversion
+            if self._data["co"][3] < 0:
+                self.hdg = round(self._data["co"][3] + 360, 2)
+            else:
+                self.hdg = round(self._data["co"][3], 2)
+            self.pitch = -round(self._data["co"][4], 2)
+            self.roll = round(self._data["co"][5], 2)
         else:
-            self.hdg = round(self._dat["co"][3], 2)
+            self.lat = None
+            self.long = None
+            self.alt = None
+            self.hdg = None
+            self.pitch = None
+            self.roll = None
         
     def __eq__(self, __o: object) -> bool:
         if not isinstance(__o, Player):
@@ -74,14 +84,31 @@ class Player:
 
 class Message:
 
-    #Represents a message sent in the GeoFS Chat
+    #Represents a message sent in the GeoFS Chat (author part needs severe optimization)
 
     def __init__(self, _data: dict):
         self._data = _data
-        self.author = u.get_player(self._data["acid"])
+        self.author = Player(u.get_player(self._data["acid"]))
         self.content = unquote(self._data["msg"])
 
     def __eq__(self, __o: object) -> bool:
         if not isinstance(__o, Message):
             return False
-        return list(self) == list (__o)
+        return self.author == __o.author and self.content == __o.content
+    
+
+class Airport:
+
+    #Represents an airport in GeoFS (make it compatible with the more complete airstrip file)
+
+    def __init__(self, _data: dict):
+        self._data = _data
+        self.icao = self._data["icao"]
+        self.lat = self._data["coord"][0]
+        self.long = self._data["coord"][1]
+        self.cc = self._data["cc"]
+    
+    def __eq__(self, __o: object) -> bool:
+        if not isinstance(__o, Airport):
+            return False
+        return self.icao == __o.icao
