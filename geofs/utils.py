@@ -29,29 +29,31 @@ SOFTWARE.
 
 import json
 import importlib.resources
-from .models import Aircraft, Player
 from .endpoints import *
+from .body import *
 import requests
 
-def get_aircraft(id):
-        with importlib.resources.open_text('geofs.py', 'data/aircraftcodes.json') as file:
-            codes = json.load(file)
-        if id in codes:
-            data = {"id": {id}, "name": data[id]["name"]}
-            return Aircraft(data)
-        else:
-            return {"id": {id}, "name": "Unknown"}
+def get_aircraft(id: str):
+    id = str(id)
+    with importlib.resources.open_text('geofs.data', 'aircraftcodes.json') as aircraft_raw:
+        ac_codes = json.load(aircraft_raw)
+    if id in ac_codes:
+        data = {"id": id, "name": ac_codes[id]}
+        return data
+    return {"id": id, "name": "Unknown"}
 
 
-def get_player(acid):
-     body = {
-          "id":"",
-          "gid": None
-     }
-     response = requests.post(map_endpoint, body)
-     response_body = json.loads(response.text)
-     users = response_body["users"]
-     for user in users:
+def get_player(acid: str):
+    response = json.loads(requests.post(map_endpoint, json = map_body).text)
+    users = response["users"]
+    for user in users:
         if user.get('acid') == acid:
-            return Player(user)
-        return None
+            return user
+    return None
+     
+def difference(list_1: list, list_2: list) -> list:
+    result = []
+    for element in list_1:
+        if element not in list_2:
+            result.append(element)
+    return result
