@@ -56,7 +56,7 @@ class Player:
         self.acid = self._data["acid"]
         self.aircraft = Aircraft(u.get_aircraft(self._data["ac"]))
         self.callsign = self._data["cs"]
-        self.foo = self.acid is None
+        self.foo = self.callsign == "Foo" or self.callsign == ''
         self.airspeed = self._data["st"]["as"]
         if self._data["co"]:
             self.lat = self._data["co"][0]
