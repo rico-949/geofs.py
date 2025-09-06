@@ -31,7 +31,7 @@ import json
 import importlib.resources
 from .endpoints import *
 from .body import *
-import requests
+
 
 def get_aircraft(id: str):
     id = str(id)
@@ -43,17 +43,9 @@ def get_aircraft(id: str):
     return {"id": id, "name": "Unknown"}
 
 
-def get_player(acid: str):
-    response = json.loads(requests.post(map_endpoint, json = map_body).text)
-    users = response["users"]
-    for user in users:
-        if user.get('acid') == acid:
-            return user
-    return None
+
      
 def difference(list_1: list, list_2: list) -> list:
-    result = []
-    for element in list_1:
-        if element not in list_2:
-            result.append(element)
-    return result
+    set_2 = set(list_2)  
+    return [element for element in list_1 if element not in set_2]  
+
