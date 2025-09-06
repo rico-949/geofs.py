@@ -17,16 +17,6 @@ supports event-driven decorators.
 
 ------------------------------------------------------------------------
 
-## Installation
-
-``` bash
-pip install -r requirements.txt
-```
-
-Requirements: - `aiohttp` - `asyncio` - `importlib.resources` (Python
-3.9+ built-in) - `logging` (standard library)
-
-------------------------------------------------------------------------
 
 ## Usage Example
 
