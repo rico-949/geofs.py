@@ -13,11 +13,12 @@ __title__ = "geofs"
 __author__ = "rico-949"
 __license__ = "MIT"
 __copyright__ = "Copyright 2024 rico-949"
-__version__ = "1.1"
+__version__ = "2.0"
 
 from .endpoints import *
 from .models import *
 from .client import *
+
 
 
 
