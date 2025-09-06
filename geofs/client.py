@@ -328,8 +328,6 @@ class Client:
         """
         Decorator for asynchronous handlers triggered by new chat messages.
 
-        Args:
-            interval (float): Polling interval in seconds (default: 0.5).
 
         Example:
             @client.on_message_sent()
@@ -355,8 +353,6 @@ class Client:
         """
         Decorator for asynchronous handlers triggered when players come online.
 
-        Args:
-            interval (float): Polling interval in seconds (default: 5.0).
 
         Example:
             @client.on_player_online()
@@ -385,8 +381,6 @@ class Client:
         """
         Decorator for asynchronous handlers triggered when players go offline.
 
-        Args:
-            interval (float): Polling interval in seconds (default: 5.0).
 
         Example:
             @client.on_player_offline()
@@ -430,3 +424,4 @@ class Client:
         if self._session:
             await self._session.close()
             self._session = None
+
