@@ -27,13 +27,13 @@ SOFTWARE.
 
 
 
-import requests
+import aiohttp
+import asyncio
 import json
 import importlib.resources
-from typing import Callable
-from threading import Thread
 import time
 import logging
+from typing import Callable
 
 from .endpoints import *
 from .models import *
@@ -45,143 +45,388 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 class Client:
 
-    #If desired, the geofsSessionID and geofsAccountID can be passed as blank, but multiplayer related methods will be useless (they are broken anyways)
+    """
+    Asynchronous GeoFS Client with caching, messaging, and event handling.
 
-    def __init__(self, geofsSessionID, geofsAccountID):
+    This class provides a high-level interface to the GeoFS multiplayer API.
+    It abstracts away raw HTTP requests into convenient methods for:
+      - Connecting and performing the initial handshake.
+      - Querying online players and aircraft.
+      - Fetching and sending chat messages.
+      - Creating artificial GeoFS server-side clients
+      - Registering asynchronous event listeners for player activity and chat.
+
+    Usage:
+        client = Client(geofsSessionID, geofsAccountID)
+        await client.start()
+
+        # Fetch all players
+        players = await client.get_playerList()
+
+        # Send a chat message
+        await client.send_message("Hello world!")
+
+        # Register an event handler
+        @client.on_message_sent()
+        async def handle_messages(messages):
+            for msg in messages:
+                print(f"{msg.author['callsign']}: {msg.content}")
+    """
+
+    CACHE_TTL = 10 
+    """Time-to-live for player cache in seconds."""
+
+
+    def __init__(self, geofsSessionID: str, geofsAccountID: str):
+
+        """
+        Initialize a GeoFS client.
+
+        Args:
+            geofsSessionID (str): Session ID for the current GeoFS login.
+            geofsAccountID (str): GeoFS account ID of the user.
+
+        Note:
+            The session ID and account ID are required for chat-related methods.
+            If passed as blank, chat will be unavailable but player list queries
+            will still function.
+        """
+
         self.sessionID = geofsSessionID
         self.accountID = geofsAccountID
-        self.myID = None
-        self.lastMsgID = None
-        self.chat_body = update_body.copy()
-        self.chat_body["sid"] = self.sessionID
-        logging.info("Initializing Session ID")
-        self.chat_body["acid"] = self.accountID
-        logging.info("Initializing Account ID")
-        self.chat_body["id"] = None
-        self.chat_body["ti"] = None
-        logging.info("Standard update packet formed")
+        self.cache: dict[str, Player] = {}
+        self.cache_last_updated: float = 0.0
+        self.myId: int | None = None
+        self.lastMsgId: int | None = None
+        self.userCount: int = 0
 
-        try:
-            # Perform handshake to initialize session details
-            logging.info("Performing handshake with GeoFS servers")
-            response = requests.post(chat_endpoint, json=self.chat_body, cookies={"PHPSESSID": self.sessionID})
-            response.raise_for_status()  # Raise an exception for HTTP errors
-            hs_response = response.json()  # Parse JSON response
+        self._decorator_tasks: list[asyncio.Task] = []
 
-            # Update client state based on server response
-            logging.info("Handshake sucsessful")
-            self.myID = hs_response.get("myId")
-            self.lastMsgID = hs_response.get("lastMsgId")
-            self.chat_body["id"] = hs_response.get("myId")
-            self.chat_body["ci"] = hs_response.get("lastMsgId")
-            self.chat_body["ti"] = hs_response.get("serverTime")
-            logging.info("GeoFS Client successfuly initialized")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Error during initialization: {e}")
-            raise RuntimeError("Failed to initialize GeoFS Client. Check your connection or credentials.")
-        except KeyError as e:
-            logging.critical(f"Unexpected response format during initialization: {e}")
-            raise RuntimeError("Server response is missing expected fields.")
-        
-
-    #this mf took me way too long to finish
-    def get_aircraft(self, id: str):
-        id = str(id)
+        # Load aircraft codes once
         with importlib.resources.open_text('geofs.data', 'aircraftcodes.json') as aircraft_raw:
-            ac_codes = json.load(aircraft_raw)
-        if id in ac_codes:
-            data = {"id": id, "name": ac_codes[id]}
-            return Aircraft(data)
+            self.ac_codes = json.load(aircraft_raw)
+
+        # Prepare update body
+        self.update_body = update_body.copy()
+        self.update_body.update({
+            "sid": self.sessionID,
+            "acid": self.accountID,
+            "id": None,
+            "ti": None,
+            "ci": None
+        })
+
+        # Prepare map body placeholder
+        self.map_body = map_body.copy()
+        self.map_body["id"] = None
+
+        self._session: aiohttp.ClientSession | None = None
+
+    async def _ensure_session(self):
+
+        """Create aiohttp.ClientSession if it doesn't exist yet."""
+
+        if self._session is None:
+            self._session = aiohttp.ClientSession(cookies={"PHPSESSID": self.sessionID})
+
+    async def handshake(self):
+
+        """
+        Perform the handshake with GeoFS servers.
+
+        This initializes `myId`, `lastMsgId`, `userCount`, updates update_body,
+        sets map_body["id"], and captures server time in `update_body["ti"]`.
+
+        Raises
+        ------
+        RuntimeError
+            If the handshake fails due to network issues / non-2xx responses.
+        """
+
+        await self._ensure_session()
+        try:
+            logging.info("Performing handshake with GeoFS servers")
+            async with self._session.post(update_endpoint, json=self.update_body) as resp:
+                resp.raise_for_status()
+                hs_response = await resp.json()
+
+            self.myId = hs_response["myId"]
+            self.lastMsgId = hs_response["lastMsgId"]
+            self.userCount = hs_response["userCount"]
+
+            self.update_body["id"] = self.myId
+            self.update_body["ci"] = self.lastMsgId
+            self.update_body["ti"] = hs_response["serverTime"]
+            self.map_body["id"] = self.myId
+
+            logging.info("GeoFS Client successfully initialized")
+        except aiohttp.ClientError as e:
+            logging.error(f"Error during handshake: {e}")
+            raise RuntimeError("Failed to initialize GeoFS Client. Check connection or credentials.")
+
+    async def _refresh_cache(self):
+        
+        """
+        Refresh the internal player cache by querying the map endpoint.
+
+        Updates:
+            - `self.cache` with current online players (ACID → Player).
+            - `self.userCount` with the total number of online players.
+            - `self.cache_last_updated` with the current timestamp.
+        """
+
+        await self._ensure_session()
+        try:
+            async with self._session.post(map_endpoint, json=self.map_body) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+
+            self.userCount = data.get("userCount", 0)
+            users = data.get("users", [])
+            self.cache = {user['acid']: Player(user) for user in users if user is not None}
+            self.cache_last_updated = time.time()
+        except aiohttp.ClientError as e:
+            logging.error(f"Error refreshing cache: {e}")
+
+    async def get_player(self, acid: str) -> Player | None:
+        
+        """
+        Retrieve a single player by ACID.
+
+        Args:
+            acid (str): The player's account ID.
+
+        Returns:
+            Player | None: The corresponding Player object if found, otherwise None.
+        """
+
+        if self.cache is None or time.time() - self.cache_last_updated > self.CACHE_TTL:
+            await self._refresh_cache()
+        return self.cache.get(acid)
+
+    async def get_playerList(self) -> list[Player]:
+
+        """
+        Retrieve a list of all online players.
+
+        Returns:
+            list[Player]: A list of Player objects representing all current users.
+        """
+
+        if self.cache is None or time.time() - self.cache_last_updated > self.CACHE_TTL:
+            await self._refresh_cache()
+        return list(self.cache.values())
+
+    async def get_userCount(self) -> int:
+
+        """
+        Retrieve the current number of online users.
+
+        Returns:
+            int: Number of users currently online.
+        """
+
+        if self.cache is None or time.time() - self.cache_last_updated > self.CACHE_TTL:
+            await self._refresh_cache()
+        return self.userCount
+
+    async def get_aircraft(self, id: str) -> Aircraft:
+        
+        """
+        Retrieve an aircraft by ID.
+
+        Args:
+            id (str): Aircraft ID.
+
+        Returns:
+            Aircraft: An Aircraft object with ID and human-readable name.
+        """
+
+        id = str(id)
+        if id in self.ac_codes:
+            return Aircraft({"id": id, "name": self.ac_codes[id]})
         return Aircraft({"id": id, "name": "Unknown"})
 
-    def get_player(self, acid: str):
-        response = json.loads(requests.post(map_endpoint, json = map_body).text)
-        users = response["users"]
-        for user in users:
-            if user.get('acid') == acid:
-                return Player(user) 
-        return None
-            
-    def get_playerList(self):
-        response = json.loads(requests.post(map_endpoint, json = map_body).text)
-        users = [Player(user) for user in response["users"]]
-        if users:
-            return users
-        return None
-    
-    def get_base(self, icao: str):
-        icao = str(icao)
-        with importlib.resources.open_text('geofs.data', 'airports.json') as airports_raw:
-            airports = json.load(airports_raw)
-        for country, country_airports in airports.items():
-            if icao in country_airports:
-                airport = {
-                    "icao": icao,
-                    "coord": country_airports[icao],
-                    "cc": country
-                }
-                return Airport(airport)
-    
-    #HOLY FUCK THIS WAS PAINFUL
-    def get_messages(self):
-        self.chat_body["ci"] = self.lastMsgID  
-        self.chat_body["id"] = self.myID
-        raw_response = requests.post(chat_endpoint, json=self.chat_body, cookies={"PHPSESSID": self.sessionID}).text
-        if raw_response:
-            response = json.loads(raw_response)
-            self.myID = response["myId"]
-            self.lastMsgID = response["lastMsgId"]
-            return [Message(msg) for msg in response["chatMessages"]]
-        else:
+    async def get_messages(self) -> list[Message]:
+        
+        """
+        Fetch new chat messages from the server.
+
+        Returns:
+            list[Message]: A list of new Message objects since the last query.
+        """
+
+        await self._ensure_session()
+        self.update_body["ci"] = self.lastMsgId
+        self.update_body["id"] = self.myId
+        try:
+            async with self._session.post(update_endpoint, json=self.update_body) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+
+            self.userCount = data.get("userCount", 0)
+            self.myId = data.get("myId", self.myId)
+            self.lastMsgId = data.get("lastMsgId", self.lastMsgId)
+            return [Message(msg) for msg in data.get("chatMessages", [])]
+        except aiohttp.ClientError as e:
+            logging.error(f"Error fetching messages: {e}")
             return []
 
-    
-    def send_message(self, msg: str):
-        msg_body = self.chat_body.copy()
+    async def update(self):
+        
+        """
+        Update the client state on the GeoFS server.
+
+        This sends a "heartbeat"-style request to keep the session alive and
+        update Client.myId and Client.userCount without sending a message.
+        """
+
+        await self._ensure_session()
+        self.update_body["ci"] = self.lastMsgId
+        self.update_body["id"] = self.myId
+        try:
+            async with self._session.post(update_endpoint, json=self.update_body) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+            self.userCount = data.get("userCount", self.userCount)
+            self.myId = data.get("myId", self.myId)
+        except aiohttp.ClientError as e:
+            logging.error(f"Error updating client: {e}")
+
+    async def send_message(self, msg: str):
+        
+        """
+        Send a chat message to the GeoFS server.
+
+        Args:
+            msg (str): The message text to send.
+
+        Updates:
+            - `lastMsgId` to the new last message.
+            - `userCount` if the server response includes it.
+
+        Raises:
+            aiohttp.ClientError: If sending fails due to network or server error.
+        """
+
+        await self._ensure_session()
+        msg_body = self.update_body.copy()
         msg_body["m"] = msg
-        response = json.loads(requests.post(chat_endpoint, json = msg_body, cookies = {"PHPSESSID": self.sessionID}).text)
-        self.myID = response["myId"]
-    
+        try:
+            async with self._session.post(update_endpoint, json=msg_body) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+            self.myId = data.get("myId", self.myId)
+            self.lastMsgId = data.get("lastMsgId", self.lastMsgId)
+            self.userCount = data.get("userCount", self.userCount)
+        except aiohttp.ClientError as e:
+            logging.error(f"Error sending message: {e}")
+
 
     def on_message_sent(self):
-        def decorator(function: Callable):
-            def process():
+        
+        """
+        Decorator for asynchronous handlers triggered by new chat messages.
+
+        Args:
+            interval (float): Polling interval in seconds (default: 0.5).
+
+        Example:
+            @client.on_message_sent()
+            async def handle_messages(messages):
+                for msg in messages:
+                    print(f"{msg.author['callsign']}: {msg.content}")
+        """
+
+        def decorator(func: Callable):
+            async def process():
                 while True:
-                    cache = self.get_messages()
-                    time.sleep(0.25)
-                    current = self.get_messages()
-                    difference = u.difference(current, cache)
-                    if len(difference) >= 1:
-                        function(messages = difference)
-            thread = Thread(target = process)
-            thread.start()
+                    messages = await self.get_messages()
+                    if messages:
+                        await func(messages=messages)
+                    await asyncio.sleep(0.5)
+            task = asyncio.create_task(process())
+            self._decorator_tasks.append(task)
+            return func
         return decorator
-    
+
     def on_player_online(self):
-        def decorator(function: Callable):
-            def process():
+        
+        """
+        Decorator for asynchronous handlers triggered when players come online.
+
+        Args:
+            interval (float): Polling interval in seconds (default: 5.0).
+
+        Example:
+            @client.on_player_online()
+            async def handle_online(players):
+                for p in players:
+                    print(f"Player {p.callsign} came online")
+        """
+
+        def decorator(func: Callable):
+            async def process():
+                cache = await self.get_playerList()
                 while True:
-                    cache = self.get_playerList()
-                    time.sleep(0.1)
-                    current = self.get_playerList()
+                    await asyncio.sleep(10)
+                    current = await self.get_playerList()
                     difference = u.difference(current, cache)
-                    if len(difference) >= 1:
-                        function(players = difference)
-            thread = Thread(target = process)
-            thread.start()
+                    if difference:
+                        await func(players=difference)
+                    cache = current
+            task = asyncio.create_task(process())
+            self._decorator_tasks.append(task)
+            return func
         return decorator
-    
+
     def on_player_offline(self):
-        def decorator(function: Callable):
-            def process():
+        
+        """
+        Decorator for asynchronous handlers triggered when players go offline.
+
+        Args:
+            interval (float): Polling interval in seconds (default: 5.0).
+
+        Example:
+            @client.on_player_offline()
+            async def handle_offline(players):
+                for p in players:
+                    print(f"Player {p.callsign} went offline")
+        """
+
+        def decorator(func: Callable):
+            async def process():
+                cache = await self.get_playerList()
                 while True:
-                    cache = self.get_playerList()
-                    time.sleep(0.1)
-                    current = self.get_playerList()
+                    await asyncio.sleep(10)
+                    current = await self.get_playerList()
                     difference = u.difference(cache, current)
-                    if len(difference) >= 1:
-                        function(players = difference)
-            thread = Thread(target = process)
-            thread.start()
+                    if difference:
+                        await func(players=difference)
+                    cache = current
+            task = asyncio.create_task(process())
+            self._decorator_tasks.append(task)
+            return func
         return decorator
-    
+
+    async def start(self):
+        
+        """
+        Abstracts away Client initializing sequence (handshaking and cache initializing)
+        """
+
+        await self.handshake()
+        await self._refresh_cache()
+
+    async def close(self):
+
+        """
+        Abstracts away Client closing sequence (cancelling async decorators and closing aiohttp.ClientSession)
+        """
+
+        for task in self._decorator_tasks:
+            task.cancel()
+        if self._session:
+            await self._session.close()
+            self._session = None
