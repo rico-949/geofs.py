@@ -55,7 +55,7 @@ Asynchronous GeoFS Client with caching, messaging, and event handling.
 Client(geofsSessionID: str, geofsAccountID: str)
 ```
 
--   `geofsSessionID` : Session ID cookie from GeoFS.
+-   `geofsSessionID` : GeoFS session ID.
 -   `geofsAccountID` : GeoFS account ID.
 
 **Key Methods**
