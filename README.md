@@ -119,8 +119,8 @@ Represents an online player in GeoFS.
 **Attributes** - `acid : str` --- GeoFS account ID. - `id : int` ---
 Player session ID. - `gears : bool` --- Landing gear state. -
 `aircraft : Aircraft` --- Current aircraft object. - `callsign : str`
---- Player callsign. - `foo : bool` --- Whether the callsign is
-`"Foo"`. - `airspeed : float` --- Indicated airspeed. - `lat : float`
+--- Player callsign. - `foo : bool` --- Whether the geofs.Player.callsign is
+`"Foo"` or the geofs.Player.acid is 0. - `airspeed : float` --- Indicated airspeed. - `lat : float`
 --- Latitude in degrees. - `long : float` --- Longitude in degrees. -
 `alt : float` --- Altitude in feet (converted from meters). -
 `hdg : float` --- Heading in degrees, normalized to \[0, 360). -
