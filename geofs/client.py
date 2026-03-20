@@ -146,7 +146,7 @@ class Client:
         await self._ensure_session()
         try:
             logging.info("Performing handshake with GeoFS servers")
-            async with self._session.post(update_endpoint, json=self.update_body) as resp:
+            async with self._session.post(CENSORED_endpoint, json=self.update_body) as resp:
                 resp.raise_for_status()
                 hs_response = await resp.json()
 
