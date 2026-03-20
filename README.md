@@ -11,8 +11,8 @@ supports event-driven decorators.
 
 -   Asynchronous client with built-in caching.
 -   Retrieve online players and aircraft details.
--   Fetch and send chat messages.
--   Event decorators for reacting to player activity and messages.
+-   Fetch and send chat messages. (discontinued by the GMRP Administration)
+-   Event decorators for reacting to player activity and messages. (latter discontinued by the GMRP Administration)
 -   Structured models for Aircraft, Player, and Message entities.
 
 ------------------------------------------------------------------------
